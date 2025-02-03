@@ -1,0 +1,258 @@
+'PuffBot version Beta
+'Created October 6, 2007
+
+'Comments are for your convenience.
+'Albeit the fact they doubled the size of the code,
+'hopefully they'll show to you the complecity of VB6.
+'Maybe a few will make you smile. :)
+
+Option Explicit
+Private Parm() As String  'Holds individual message fragments
+
+Private Sub ChangeSettings(Mode As String)
+    Dim i As Integer
+    Dim Temp As String
+    
+    If Mode = "SAVE" Then  'If save, then save!
+        SaveSetting "PuffBot", "Settings", "Channels", ""  'Clear current settings.
+        For i = 1 To Channels.ListCount  'Save settings
+            SaveSetting "PuffBot", "Settings", "Channels", GetSetting("PuffBot", "Settings", "Channels") & Channels.List(i - 1) & "~"  'Wow, this is a long line...
+        Next i
+    ElseIf Mode = "GET" Then  'Probably good idea to do ElseIf rather than Else in case I type
+        Temp = GetSetting("PuffBot", "Settings", "Channels")  'something in wrong...
+        Do Until Temp = ""
+            Channels.AddItem Left(Temp, InStr(Temp, "~") - 1)  'Channels split with '~', so divide it up. Probably a better way...
+            Temp = Mid(Temp, InStr(Temp, "~") + 1)
+        Loop
+    End If
+End Sub
+
+Private Sub cmdChannel_Click(Index As Integer)
+    Dim NewChan As String
+    
+    Select Case cmdChannel(Index).Caption
+    Case Is = "Add"
+        NewChan = InputBox("What channel should I join?", "Channel")
+        If NewChan = "" Then Exit Sub  'In case user presses 'cancel'...
+        
+        If Left(NewChan, 1) <> "#" Then NewChan = "#" & NewChan  'For lazy people like me. :)
+        Channels.AddItem NewChan
+        If Tcp.State = sckConnected Then Outgoing.AddItem "JOIN " & NewChan  'Join channel if connected
+    Case Is = "Remove"
+        If Channels.ListIndex <> -1 Then
+            If Tcp.State = sckConnected Then Outgoing.AddItem "PART " & Channels.List(Channels.ListIndex)  'Part channel if connected
+            Channels.RemoveItem Channels.ListIndex
+        End If
+    End Select
+End Sub
+
+Private Sub cmdOutgoing_Click(Index As Integer)
+    Select Case cmdOutgoing(Index).Caption
+    Case Is = "Add"
+        Outgoing.AddItem InputBox("What do you want to be sent?", "Outgoing")
+    Case Is = "Remove"
+        If Outgoing.ListIndex <> -1 Then Outgoing.RemoveItem Outgoing.ListIndex  'If something is selected, then
+    End Select                                                                   'remove it!
+End Sub
+
+Private Sub cmdConnect_Click()
+    Select Case cmdConnect.Caption
+    Case Is = "Connect"
+        ConnectToServer
+        cmdConnect.Caption = "Disconnect"
+        cmdConnect.ToolTipText = "Disconnect from the IRC server."
+    Case Is = "Disconnect"
+        Tcp.Close
+        cmdConnect.Caption = "Connect"
+        cmdConnect.ToolTipText = "Connect to the IRC server."
+    End Select
+End Sub
+
+Private Sub ConnectToServer()
+    Tcp.Close  'Close current connection or connecting attempt.
+    Tcp.Connect "irc.freenode.net", 8001
+End Sub
+
+Private Sub SplitParms(Message As String, Optional Delimeter As String)
+    If Delimeter = "" Then Delimeter = " "  'If delimeter isn't specified, ' ' is assumed to be the split point.
+    Parm = Split(Delimeter & Message, Delimeter)
+End Sub
+
+Private Function Parms(Start As Integer)
+    Do While Start <= UBound(Parm)  'Let's just use Start as the counter...
+        Parms = Parms & Parm(Start) & " "
+        Start = Start + 1
+    Loop
+    Parms = Trim(Parms)  'Strip off extra end. 'Left(Parms, Len(Parms)-1)' is too long, don't you think? :)
+End Function
+
+Private Sub Form_Load()
+    Randomize  'Apparentely, the seed in which 'rnd' is based on doesn't change between running. This will force it to.
+    ChangeSettings "GET"  'Get some settings!
+End Sub
+
+Private Sub Form_Unload(Cancel As Integer)
+    If Tcp.State = sckConnected Then
+        Tcp.Close  'Close if connected.
+    End If
+    ChangeSettings "SAVE"  'Save some settings!
+End Sub
+
+Private Sub Tcp_Close()
+    'Reset defaults
+    Timer1.Enabled = False
+    cmdConnect.Caption = "Connect"
+    cmdConnect.ToolTipText = "Connect to the IRC server."
+End Sub
+
+Private Sub Timer1_Timer()
+    If Tcp.State = 0 Then  'If not connected, disable timer and lengthen interval
+        Timer1.Interval = 10000
+        Timer1.Enabled = False
+        Exit Sub
+    End If
+    Timer1.Interval = 1000  'Login information assumed sent, so IP should be hidden by now.
+    If Outgoing.ListCount <> 0 Then  'If an item is present, send it!
+        Tcp.SendData Outgoing.List(0) & vbCrLf
+        Outgoing.RemoveItem 0
+    End If
+End Sub
+
+Private Sub Tcp_Connect()
+    Tcp.SendData "NICK PuffBot" & vbCrLf  'Login information. If you see this...DIE!!!!!!!
+    Tcp.SendData "USER PuffBot Puffbot irc.freenode.net :PuffBot" & vbCrLf
+    Tcp.SendData "PRIVMSG nickserv :identify creamypuffs...yum!" & vbCrLf
+    Tcp.SendData "PRIVMSG chanserv :#Cremepuff222 identify creamypuffs...yum!" & vbCrLf
+    Timer1.Enabled = True  'Notice they're being directly sent. Hopefully this will help
+End Sub                    'speed up the login process.
+
+Private Sub Tcp_DataArrival(ByVal bytesTotal As Long)
+    On Error Resume Next  'Hopefully we won't get caught in a loop, but I'm
+    Dim Data As String    'too lazy to make a decent error handler.
+    Dim i As Integer
+    
+    Tcp.GetData Data, vbString  'Get data in a string
+    Do Until InStr(Data, vbCrLf) = 0  'IRC can send more than one message at a time, so parse it until
+        SplitParms (Left(Data, InStr(Data, vbCrLf) - 1))  'none is left.
+        Data = Mid(Data, InStr(Data, vbCrLf) + 2)  'Next fragment
+        
+        If InStr(UCase(Data), "PING") <> 0 Then Stop
+        
+        Select Case Parm(2)  'Get server command
+        Case Is = "PRIVMSG"
+            Select Case LCase(Mid(Parm(4), 2, Len(Parm(4)) - 2))
+            Case Is = "!time"  'Return UTC time
+                Outgoing.AddItem "PRIVMSG " & Parm(3) & " :It is currently " & UTCTime & " (UTC)."
+            Case Is = "!smilie"  'Random emoticon
+                Outgoing.AddItem "PRIVMSG " & Parm(3) & " :" & Smilie
+            Case Is = "!about"  'About information
+                Outgoing.AddItem "NOTICE " & GetName & " :PuffBot version beta."
+                Outgoing.AddItem "NOTICE " & GetName & " :For more information, contact Cremepuff222 at"
+                Outgoing.AddItem "NOTICE " & GetName & " :his channel (#Cremepuff222), or email him"
+                Outgoing.AddItem "NOTICE " & GetName & " :at cremepuff222@gmail.com ."
+                Outgoing.AddItem "NOTICE " & GetName & " :Have a pleasant day!"
+            Case Is = "!test"  'Make sure it's working properly
+                If GetName = "Cremepuff222" Then  'Have to have some humor! :)
+                    Outgoing.AddItem "PRIVMSG " & Parm(3) & " :Everything is working fine, master, thanks to your skills. I could use some !botoil though!"
+                Else
+                    Outgoing.AddItem "PRIVMSG " & Parm(3) & " :Test?! What, do you think I'm broken or something?! Sheesh, my programmer doesn't suck that much, " & GetName & "! :-O"
+                End If
+            Case Is = "!botoil"
+                Outgoing.AddItem "PRIVMSG " & Parm(3) & " :Thank you very much, " & GetName & "! :-D"
+                If Rnd > 0.9 Then  'Bots have to discharge fluids sometimes... :)
+                    Outgoing.AddItem "PRIVMSG " & Parm(3) & " :Ugh, I've really got to use the restroom..."
+                End Select
+            Case Else  'Any other text...
+                If Mid(Parm(4), 2, 1) = "!" Then  'If it's a command, try to figure out what to do.
+                End If
+            End Select
+        Case Is = "NOTICE"
+            If Parms(4) = ":Password accepted - you are now recognized" Then
+                i = 1  'Join channels since IP is hidden
+                Do While i <= Channels.ListCount  'Add each channel to outgoing...
+                    Outgoing.AddItem "JOIN " & Channels.List(i - 1)
+                    i = i + 1
+                Loop  'w00t!
+            End If
+        End Select
+    Loop
+End Sub
+
+Private Function Smilie()  'Requested by Animum (October 6, 2007)
+    Select Case Int((20) * Rnd + 1)  'Random integer from 1-20.
+    Case Is = 1
+        Smilie = ":-D"  'Grinning
+    Case Is = 2
+        Smilie = ":-)"  'Happy
+    Case Is = 3
+        Smilie = ":-|"  'Neutral
+    Case Is = 4
+        Smilie = ":-("  'Sad
+    Case Is = 5
+        Smilie = ":~("  'Crying
+    Case Is = 6
+        Smilie = ";-)"  'Winking...
+    Case Is = 7
+        Smilie = ":-p"  'Sticking tongue out
+    Case Is = 8
+        Smilie = ":-/"  'Not sure what this is...
+    Case Is = 9
+        Smilie = "8-)"  'Sunglasses
+    Case Is = 10
+        Smilie = ":-O"  'Surprised
+    Case Is = 11
+        Smilie = ">:-("  'Angry
+    Case Is = 12
+        Smilie = ">:-D"  'Mischeviously angry?
+    Case Is = 13
+        Smilie = "O_O"  'Appalled or something...
+    Case Is = 14
+        Smilie = "O_o"  'Appalled or something...
+    Case Is = 15
+        Smilie = "o_O"  'Appalled or something...
+    Case Is = 16
+        Smilie = ":-?"  'Confused.
+    Case Is = 17
+        Smilie = "9_9"  'Rolling eyes
+    Case Is = 18
+        Smilie = ">-)"  'ALIEN!!!!!
+    Case Is = 19
+        Smilie = "X-D"  'Squinchy eyes
+    Case Is = 20
+        Smilie = ":-DD"  'Extremely happy
+    End Select  'Wow that took a long time to write...
+End Function
+
+Private Function UTCTime()
+    If Right(Time, 2) = "AM" Then  'If AM, hours won't overflow. So just add hours.
+        UTCTime = UTCTime = Hour(Time) + 5 & ":" & Minute(Time) & ":" & Second(Time)
+    Else  'If PM, could overflow. (23+5=28)
+        If Hour(Time) + 5 <= 24 Then
+            UTCTime = Hour(Time) + 5 & ":" & Minute(Time) & ":" & Second(Time)
+        Else
+            UTCTime = Hour(Time) - 19 & ":" & Minute(Time) & ":" & Second(Time)  '5-24=-19, so subtract 19 from current time
+        End If
+    End If
+End Function
+
+Private Function WikiLink(RawText As String)
+    Dim i As Integer  'For individual characters
+    Dim l As Integer  'For each link
+    Dim Link() As String
+
+    If InStr(RawText, "{{") <> 0 Then  'If there's brackets, replace is with [[Template:]]
+        RawText = Left(RawText, InStr(RawText, "{{") - 1) & "[[Template:" & Mid(RawText, InStr(RawText, "{{") + 2) & "]]"
+        RawText = Left(RawText, InStr(RawText, "}}") - 1) & Mid(RawText, InStr(RawText, "}}") + 2)
+    End If
+    Link = Split("]]" & RawText, "]]")  'Split at the end of each link
+End Function
+
+Private Function GetName()
+    GetName = Mid(Parm(1), 2, InStr(Parm(1), "!") - 2)  'Split at the hostmark.
+    'Got a little tired writing 'Mid(Parm(1), 2, InStr(Parm(1), "!") - 2)'
+    'every time I wanted to send someone a message or user his/her name.
+    'Call me lazy, but I'm happier and can code much faster now! :)
+End Function
+
+    'Goodness this code is getting long!
+    'May have to move into a seperate module someday...
